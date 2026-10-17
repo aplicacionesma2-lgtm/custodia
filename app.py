@@ -4,6 +4,7 @@ from datetime import date
 import uuid
 import gspread
 from google.oauth2.service_account import Credentials
+import time
 
 # ----------------------------
 # CONFIGURACIÓN Y ESTILOS
@@ -33,40 +34,85 @@ def conectar_sheets():
     scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     client = gspread.authorize(creds)
-    spreadsheet = client.open_by_url(url)
-    return spreadsheet
+    return client.open_by_url(url)
 
 def obtener_hoja(nombre_hoja, headers):
     spreadsheet = conectar_sheets()
     try:
-        sheet = spreadsheet.worksheet(nombre_hoja)
+        return spreadsheet.worksheet(nombre_hoja)
     except gspread.exceptions.WorksheetNotFound:
         sheet = spreadsheet.add_worksheet(title=nombre_hoja, rows=1000, cols=10)
         sheet.append_row(headers)
-    return sheet
+        return sheet
 
 # ----------------------------
-# GESTIÓN DE PRODUCTOS (CACHÉ LARGA)
+# CARGA DE DATOS (SOLO UNA VEZ POR SESIÓN)
 # ----------------------------
-@st.cache_data(ttl=300)  # 5 minutos de caché para evitar el 429
-def cargar_productos():
+def sincronizar_datos(forzar=False):
+    # Si ya tenemos los datos y no forzamos, no le preguntamos a Google
+    if not forzar and "df_historial" in st.session_state and "lista_productos" in st.session_state:
+        return
+
     try:
-        sheet = obtener_hoja("Productos", ["id", "nombre"])
-        records = sheet.get_all_records()
-        if not records:
-            return []
-        return [str(r["nombre"]).strip() for r in records if "nombre" in r]
-    except Exception as e:
-        st.error(f"Error al cargar productos: {e}")
-        return []
+        # Cargar Productos
+        sheet_prod = obtener_hoja("Productos", ["id", "nombre"])
+        records_prod = sheet_prod.get_all_records()
+        st.session_state.lista_productos = [str(r["nombre"]).strip() for r in records_prod if "nombre" in r] if records_prod else []
 
-def guardar_producto(nombre):
+        # Cargar Historial
+        sheet_hist = obtener_hoja("Sheet1", ["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final"])
+        records_hist = sheet_hist.get_all_records()
+        
+        if records_hist:
+            df = pd.DataFrame(records_hist)
+            df["producto"] = df["producto"].astype(str).str.strip()
+            for col in ["stock_inicial", "entradas", "salidas", "stock_final"]:
+                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+            st.session_state.df_historial = df
+        else:
+            st.session_state.df_historial = pd.DataFrame(columns=["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final"])
+            
+    except gspread.exceptions.APIError as e:
+        if "429" in str(e):
+            st.error("⏳ Google Sheets está saturado (límite de 60 lecturas por minuto). Por favor, **espera 1 minuto** y recarga la página.")
+        else:
+            st.error(f"Error de Google Sheets: {e}")
+        st.stop() # Detiene la app para que no siga intentando
+    except Exception as e:
+        st.error(f"Error inesperado: {e}")
+        st.stop()
+
+# Llamamos a la sincronización al inicio
+if "df_historial" not in st.session_state:
+    with st.spinner("Conectando con la nube..."):
+        sincronizar_datos()
+
+# ----------------------------
+# FUNCIONES DE GUARDADO (ESCRIBEN Y ACTUALIZAN MEMORIA)
+# ----------------------------
+def guardar_nuevo_registro(fecha, producto, stock_inicial, entradas, salidas, stock_final):
+    try:
+        sheet = obtener_hoja("Sheet1", ["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final"])
+        nuevo_id = str(uuid.uuid4())
+        sheet.append_row([nuevo_id, str(fecha), producto, int(stock_inicial), int(entradas), int(salidas), int(stock_final)])
+        
+        # Actualizamos la memoria local sin pedirle a Google
+        nuevo_df = pd.DataFrame([{"id": nuevo_id, "fecha": str(fecha), "producto": producto, "stock_inicial": int(stock_inicial), "entradas": int(entradas), "salidas": int(salidas), "stock_final": int(stock_final)}])
+        st.session_state.df_historial = pd.concat([st.session_state.df_historial, nuevo_df], ignore_index=True)
+        return True
+    except Exception as e:
+        st.error(f"Error al guardar: {e}")
+        return False
+
+def crear_producto(nombre):
     try:
         sheet = obtener_hoja("Productos", ["id", "nombre"])
         sheet.append_row([str(uuid.uuid4()), str(nombre).strip()])
-        st.cache_data.clear() # Limpia la caché para ver el cambio
+        st.session_state.lista_productos.append(str(nombre).strip())
+        return True
     except Exception as e:
-        st.error(f"Error al guardar producto: {e}")
+        st.error(f"Error al crear producto: {e}")
+        return False
 
 def editar_producto(nombre_antiguo, nombre_nuevo):
     try:
@@ -74,9 +120,12 @@ def editar_producto(nombre_antiguo, nombre_nuevo):
         cell = sheet.find(nombre_antiguo)
         if cell:
             sheet.update_cell(cell.row, 2, nombre_nuevo.strip())
-        st.cache_data.clear()
+            st.session_state.lista_productos = [nombre_nuevo.strip() if p == nombre_antiguo else p for p in st.session_state.lista_productos]
+            return True
+        return False
     except Exception as e:
-        st.error(f"Error al editar producto: {e}")
+        st.error(f"Error al editar: {e}")
+        return False
 
 def eliminar_producto(nombre):
     try:
@@ -84,48 +133,21 @@ def eliminar_producto(nombre):
         cell = sheet.find(nombre)
         if cell:
             sheet.delete_rows(cell.row)
-        st.cache_data.clear()
+            st.session_state.lista_productos.remove(nombre)
+            return True
+        return False
     except Exception as e:
-        st.error(f"Error al eliminar producto: {e}")
+        st.error(f"Error al eliminar: {e}")
+        return False
 
 # ----------------------------
-# GESTIÓN DE HISTORIAL (CACHÉ LARGA)
+# INTERFAZ
 # ----------------------------
-@st.cache_data(ttl=300)  # 5 minutos de caché
-def cargar_historial():
-    try:
-        sheet = obtener_hoja("Sheet1", ["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final"])
-        records = sheet.get_all_records()
-        if not records:
-            return pd.DataFrame(columns=["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final"])
-        
-        df = pd.DataFrame(records)
-        df["producto"] = df["producto"].astype(str).str.strip()
-        df["stock_inicial"] = pd.to_numeric(df["stock_inicial"], errors="coerce").fillna(0).astype(int)
-        df["entradas"] = pd.to_numeric(df["entradas"], errors="coerce").fillna(0).astype(int)
-        df["salidas"] = pd.to_numeric(df["salidas"], errors="coerce").fillna(0).astype(int)
-        df["stock_final"] = pd.to_numeric(df["stock_final"], errors="coerce").fillna(0).astype(int)
-        return df
-    except Exception as e:
-        st.error(f"Error al leer Google Sheets: {e}")
-        return pd.DataFrame(columns=["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final"])
+st.markdown("<h1>📦 Control de Stock</h1>", unsafe_allow_html=True)
 
-def guardar_nuevo_registro(fecha, producto, stock_inicial, entradas, salidas, stock_final):
-    try:
-        sheet = obtener_hoja("Sheet1", ["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final"])
-        sheet.append_row([str(uuid.uuid4()), str(fecha), producto, int(stock_inicial), int(entradas), int(salidas), int(stock_final)])
-        st.cache_data.clear() # Limpia caché para ver el nuevo registro
-    except Exception as e:
-        st.error(f"Error al guardar en Google Sheets: {e}")
-
-# ----------------------------
-# LÓGICA DE LA APP
-# ----------------------------
 if "form_version" not in st.session_state:
     st.session_state.form_version = 0
 v = st.session_state.form_version
-
-st.markdown("<h1>📦 Control de Stock</h1>", unsafe_allow_html=True)
 
 tab_registro, tab_historial, tab_consolidado, tab_productos = st.tabs([
     "📝 Registrar", "📜 Historial", "📊 Consolidado", "🛠️ Productos"
@@ -133,12 +155,12 @@ tab_registro, tab_historial, tab_consolidado, tab_productos = st.tabs([
 
 # --- PESTAÑA REGISTRAR ---
 with tab_registro:
-    PRODUCTOS = cargar_productos() # Se lee de la caché, no de Google
+    PRODUCTOS = st.session_state.lista_productos
+    historial_actual = st.session_state.df_historial
     
     if not PRODUCTOS:
         st.warning("⚠️ No hay productos registrados. Ve a la pestaña '🛠️ Productos' para agregar uno.")
     else:
-        historial_actual = cargar_historial() # Se lee de la caché
         with st.container():
             st.markdown('<div class="card">', unsafe_allow_html=True)
             st.subheader("📅 Fecha y Producto")
@@ -179,16 +201,16 @@ with tab_registro:
                 st.warning("⚠️ No hay movimientos que guardar.")
             else:
                 stock_inicial_real = nuevo_stock_base if actualizar_inicial else stock_actual
-                guardar_nuevo_registro(fecha, producto, stock_inicial_real, entradas, salidas, stock_final)
-                st.success(f"✅ Guardado en Google Sheets para **{producto}**")
-                st.balloons()
-                st.session_state.form_version += 1
-                st.rerun()
+                if guardar_nuevo_registro(fecha, producto, stock_inicial_real, entradas, salidas, stock_final):
+                    st.success(f"✅ Guardado para **{producto}**")
+                    st.balloons()
+                    st.session_state.form_version += 1
+                    st.rerun()
 
 # --- PESTAÑA HISTORIAL ---
 with tab_historial:
-    PRODUCTOS = cargar_productos()
-    historial = cargar_historial()
+    PRODUCTOS = st.session_state.lista_productos
+    historial = st.session_state.df_historial
 
     if historial.empty:
         st.info("Aún no hay registros.")
@@ -226,13 +248,14 @@ with tab_historial:
                     if st.button("🗑️ Eliminar este registro", key=f"del_{row['id']}"):
                         sheet = obtener_hoja("Sheet1", [])
                         sheet.delete_rows(row_gsheets)
-                        st.cache_data.clear()
+                        # Eliminar de memoria local
+                        st.session_state.df_historial = st.session_state.df_historial[st.session_state.df_historial["id"] != row["id"]]
                         st.success("🗑️ Registro eliminado")
                         st.rerun()
 
 # --- PESTAÑA CONSOLIDADO ---
 with tab_consolidado:
-    historial = cargar_historial()
+    historial = st.session_state.df_historial
     if not historial.empty:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.subheader("📊 Resumen Total por Producto")
@@ -253,19 +276,19 @@ with tab_productos:
     nuevo_prod = st.text_input("Nombre del producto", key="nuevo_prod_input")
     if st.button("Guardar Producto"):
         if nuevo_prod.strip():
-            if nuevo_prod.strip().upper() in [p.upper() for p in cargar_productos()]:
+            if nuevo_prod.strip().upper() in [p.upper() for p in st.session_state.lista_productos]:
                 st.warning("⚠️ Este producto ya existe.")
             else:
-                guardar_producto(nuevo_prod)
-                st.success("✅ Producto creado con éxito.")
-                st.rerun()
+                if crear_producto(nuevo_prod):
+                    st.success("✅ Producto creado con éxito.")
+                    st.rerun()
         else:
             st.error("El nombre no puede estar vacío.")
     st.markdown('</div>', unsafe_allow_html=True)
 
     st.markdown('<div class="card">', unsafe_allow_html=True)
     st.subheader("⚙️ Administrar Productos")
-    productos_actuales = cargar_productos()
+    productos_actuales = st.session_state.lista_productos
     
     if not productos_actuales:
         st.info("No hay productos para administrar.")
@@ -278,14 +301,14 @@ with tab_productos:
             nuevo_nombre = st.text_input("Nuevo nombre", value=prod_seleccionado, key="edit_prod_input")
             if st.button("Actualizar Nombre"):
                 if nuevo_nombre.strip() and nuevo_nombre.strip() != prod_seleccionado:
-                    editar_producto(prod_seleccionado, nuevo_nombre)
-                    st.success("✅ Producto actualizado.")
-                    st.rerun()
+                    if editar_producto(prod_seleccionado, nuevo_nombre):
+                        st.success("✅ Producto actualizado.")
+                        st.rerun()
         with col2:
             st.markdown("**Eliminar**")
             st.write("Esto borrará el producto de la lista.")
             if st.button("🗑️ Eliminar Producto"):
-                eliminar_producto(prod_seleccionado)
-                st.success("🗑️ Producto eliminado.")
-                st.rerun()
+                if eliminar_producto(prod_seleccionado):
+                    st.success("🗑️ Producto eliminado.")
+                    st.rerun()
     st.markdown('</div>', unsafe_allow_html=True)
