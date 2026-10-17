@@ -9,7 +9,7 @@ import time
 # ----------------------------
 # CONFIGURACIÓN Y ESTILOS
 # ----------------------------
-st.set_page_config(page_title="📦 Control de Stock", page_icon="📦", layout="centered")
+st.set_page_config(page_title="📦 Control de Custodia", page_icon="📦", layout="centered")
 
 st.markdown("""
     <style>
@@ -143,7 +143,7 @@ def eliminar_producto(nombre):
 # ----------------------------
 # INTERFAZ
 # ----------------------------
-st.markdown("<h1>📦 Control de Stock</h1>", unsafe_allow_html=True)
+st.markdown("<h1>📦 Control de Custodia</h1>", unsafe_allow_html=True)
 
 if "form_version" not in st.session_state:
     st.session_state.form_version = 0
