@@ -39,8 +39,17 @@ def conectar_sheets():
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
     client = gspread.authorize(creds)
     
-    # Abrimos la hoja por URL y seleccionamos "Hoja 1"
-    sheet = client.open_by_url(url).worksheet("Hoja 1")
+    # Abrimos el archivo de Google Sheets
+    spreadsheet = client.open_by_url(url)
+    
+    try:
+        # Buscamos la pestaña "Sheet1" (así se llama en tu captura)
+        sheet = spreadsheet.worksheet("Sheet1")
+    except gspread.exceptions.WorksheetNotFound:
+        # Si por alguna razón no existe, la crea y le pone los encabezados
+        sheet = spreadsheet.add_worksheet(title="Sheet1", rows=1000, cols=10)
+        sheet.append_row(["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final"])
+    
     return sheet
 
 # ----------------------------
