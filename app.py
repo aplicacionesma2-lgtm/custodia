@@ -4,7 +4,6 @@ from datetime import date
 import uuid
 import gspread
 from google.oauth2.service_account import Credentials
-from streamlit_gsheets import GSheetsConnection
 
 # ----------------------------
 # CONFIGURACIÓN Y ESTILOS
@@ -96,16 +95,6 @@ def guardar_nuevo_registro(fecha, producto, stock_inicial, entradas, salidas, st
     except Exception as e:
         st.error(f"Error al guardar en Google Sheets: {e}")
 
-def actualizar_registro_existente(row_index, df_actual):
-    try:
-        sheet = conectar_sheets()
-        # Convertimos el dataframe de nuevo a lista de listas (incluyendo encabezados)
-        # row_index es el número de fila en Google Sheets (1 es el encabezado, 2 es el primer dato)
-        data = [df_actual.columns.values.tolist()] + df_actual.values.tolist()
-        sheet.update(values=data, range_name=f"A1:G{len(data)}")
-    except Exception as e:
-        st.error(f"Error al actualizar Google Sheets: {e}")
-
 # ----------------------------
 # LÓGICA DE LA APP
 # ----------------------------
@@ -154,16 +143,14 @@ with tab_registro:
     st.metric(label="Resultado", value=f"{stock_final} unidades")
     st.markdown('</div>', unsafe_allow_html=True)
 
-        if st.button("💾 Guardar registro en la nube"):
+    # --- BOTÓN GUARDAR (Aquí estaba el error de espacio) ---
+    if st.button("💾 Guardar registro en la nube"):
         if stock_final < 0:
             st.error(f"🚨 ¡Ojo! Tienes {nuevo_stock_base} y quieres sacar {salidas}.")
         elif entradas == 0 and salidas == 0 and not actualizar_inicial:
             st.warning("⚠️ No hay movimientos que guardar.")
         else:
-            # LÓGICA CORREGIDA:
-            # Si actualizó el stock inicial, guardamos ese valor tal cual.
-            # Si no lo actualizó, guardamos el stock que ya teníamos en el sistema.
-            
+            # LÓGICA CORREGIDA: Si actualizó el stock inicial, guardamos ese valor.
             stock_inicial_real = nuevo_stock_base if actualizar_inicial else stock_actual
             
             guardar_nuevo_registro(
@@ -219,7 +206,6 @@ with tab_historial:
                     st.write(f"**Salidas:** ➖ {int(row['salidas'])}")
                     st.write(f"**Stock final:** ✅ {int(row['stock_final'])}")
 
-                    # EDICIÓN Y ELIMINACIÓN (Para no hacer el código eterno, usaremos actualización por lote)
                     if st.button("🗑️ Eliminar este registro", key=f"del_{row['id']}"):
                         sheet = conectar_sheets()
                         sheet.delete_rows(row_gsheets)
