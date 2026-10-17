@@ -2,6 +2,8 @@ import streamlit as st
 import pandas as pd
 from datetime import date
 import uuid
+import gspread
+from google.oauth2.service_account import Credentials
 from streamlit_gsheets import GSheetsConnection
 
 # ----------------------------
@@ -21,38 +23,82 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------------------
-# CONEXIÓN A GOOGLE SHEETS
+# CONEXIÓN A GOOGLE SHEETS (Vía gspread directo)
 # ----------------------------
-# Creamos la conexión usando los secretos de Streamlit
-conn = st.connection("gsheets", type=GSheetsConnection)
+@st.cache_resource
+def conectar_sheets():
+    # Leemos las credenciales desde los secrets de Streamlit Cloud
+    creds_dict = dict(st.secrets["connections"]["gsheets"])
+    # El spreadsheet de los secrets (URL)
+    url = creds_dict.pop("spreadsheet", "")
+    # Limpiamos el diccionario para que Credentials no se queje de llaves extra
+    creds_dict.pop("worksheet", None)
+    
+    # Autenticación
+    scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+    creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+    client = gspread.authorize(creds)
+    
+    # Abrimos la hoja por URL y seleccionamos "Hoja 1"
+    sheet = client.open_by_url(url).worksheet("Hoja 1")
+    return sheet
 
-@st.cache_data(ttl=10) # Cache de 10 segundos para que sea rápido
+# ----------------------------
+# CARGA DE PRODUCTOS DESDE EXCEL
+# ----------------------------
+@st.cache_data
 def cargar_productos():
     try:
         df = pd.read_excel("data.xlsx", sheet_name="HOJA 1")
-        return df["PRODUCTO"].dropna().astype(str).tolist()
-    except Exception:
+        return df["PRODUCTO"].dropna().astype(str).str.strip().tolist()
+    except Exception as e:
         return ["Producto de ejemplo"]
 
 PRODUCTOS = cargar_productos()
 
+# ----------------------------
+# FUNCIONES DE HISTORIAL CON GSPREAD
+# ----------------------------
 def cargar_historial():
     try:
-        # Leer de la hoja
-        df = conn.read(worksheet="Sheet1", ttl=0) # ttl=0 para que siempre traiga datos frescos
-        if df.empty:
+        sheet = conectar_sheets()
+        # Traemos todos los registros como lista de diccionarios
+        records = sheet.get_all_records()
+        if not records:
             return pd.DataFrame(columns=["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final"])
+        
+        df = pd.DataFrame(records)
+        # Aseguramos que las columnas numéricas sean números y los textos sean textos limpios
+        df["producto"] = df["producto"].astype(str).str.strip()
+        df["stock_inicial"] = pd.to_numeric(df["stock_inicial"], errors="coerce").fillna(0).astype(int)
+        df["entradas"] = pd.to_numeric(df["entradas"], errors="coerce").fillna(0).astype(int)
+        df["salidas"] = pd.to_numeric(df["salidas"], errors="coerce").fillna(0).astype(int)
+        df["stock_final"] = pd.to_numeric(df["stock_final"], errors="coerce").fillna(0).astype(int)
         return df
     except Exception as e:
-        # Si la hoja está vacía o hay error, devolvemos df vacío
+        st.error(f"Error al leer Google Sheets: {e}")
         return pd.DataFrame(columns=["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final"])
 
-def guardar_dataframe(df):
-    # Escribir todo el DataFrame actualizado en Google Sheets
-    conn.update(worksheet="Sheet1", data=df)
+def guardar_nuevo_registro(fecha, producto, stock_inicial, entradas, salidas, stock_final):
+    try:
+        sheet = conectar_sheets()
+        # Agrega una fila nueva al final de la hoja
+        sheet.append_row([str(uuid.uuid4()), str(fecha), producto, int(stock_inicial), int(entradas), int(salidas), int(stock_final)])
+    except Exception as e:
+        st.error(f"Error al guardar en Google Sheets: {e}")
+
+def actualizar_registro_existente(row_index, df_actual):
+    try:
+        sheet = conectar_sheets()
+        # Convertimos el dataframe de nuevo a lista de listas (incluyendo encabezados)
+        # row_index es el número de fila en Google Sheets (1 es el encabezado, 2 es el primer dato)
+        data = [df_actual.columns.values.tolist()] + df_actual.values.tolist()
+        sheet.update(values=data, range_name=f"A1:G{len(data)}")
+    except Exception as e:
+        st.error(f"Error al actualizar Google Sheets: {e}")
 
 # ----------------------------
-# LÓGICA DE LA APP (Igual que antes, pero guardando en la nube)
+# LÓGICA DE LA APP
 # ----------------------------
 if "form_version" not in st.session_state:
     st.session_state.form_version = 0
@@ -72,10 +118,11 @@ with tab_registro:
         producto = st.selectbox("Selecciona el producto", PRODUCTOS, key=f"producto_{v}")
         
         stock_actual = 0
-        if not historial_actual.empty and 'producto' in historial_actual.columns:
-            df_prod = historial_actual[historial_actual["producto"] == producto]
+        if not historial_actual.empty:
+            # Filtramos por el producto
+            df_prod = historial_actual[historial_actual["producto"] == producto.strip()]
             if not df_prod.empty:
-                stock_actual = int(pd.to_numeric(df_prod["stock_final"], errors='coerce').fillna(0).sum())
+                stock_actual = int(df_prod["stock_final"].sum())
         
         st.info(f"📦 **Stock actual en sistema:** {stock_actual} unidades")
         actualizar_inicial = st.checkbox("🔄 Registrar/Actualizar Stock Inicial", key=f"chk_inicial_{v}")
@@ -104,38 +151,81 @@ with tab_registro:
         elif entradas == 0 and salidas == 0 and not actualizar_inicial:
             st.warning("⚠️ No hay movimientos que guardar.")
         else:
-            df_actual = cargar_historial()
             entrada_real = entradas
             if actualizar_inicial and nuevo_stock_base != stock_actual:
                 entrada_real += (nuevo_stock_base - stock_actual)
             
-            nuevo = pd.DataFrame([{
-                "id": str(uuid.uuid4()), "fecha": str(fecha), "producto": producto,
-                "stock_inicial": stock_actual, "entradas": entrada_real,
-                "salidas": salidas, "stock_final": stock_final
-            }])
-            df_final = pd.concat([df_actual, nuevo], ignore_index=True)
-            guardar_dataframe(df_final)
+            guardar_nuevo_registro(fecha, producto, stock_actual, entrada_real, salidas, stock_final)
             
             st.success(f"✅ Guardado en Google Sheets para **{producto}**")
             st.balloons()
             st.session_state.form_version += 1
             st.rerun()
 
-# --- PESTAÑA HISTORIAL (Igual que antes, usando cargar_historial y guardar_dataframe) ---
+# --- PESTAÑA HISTORIAL ---
 with tab_historial:
     historial = cargar_historial()
+
     if historial.empty:
         st.info("Aún no hay registros.")
     else:
-        # ... (Copia aquí toda la lógica de búsqueda y edición que ya tenías)
-        # Solo asegúrate de que al editar/eliminar uses guardar_dataframe(df_actual) al final.
-        st.write("Historial cargado correctamente desde Google Sheets.")
-        st.dataframe(historial)
+        with st.container():
+            st.markdown('<div class="card">', unsafe_allow_html=True)
+            st.subheader("🔍 Buscar registros")
+            col1, col2 = st.columns(2)
+            with col1:
+                fecha_busqueda = st.date_input("Buscar por fecha", value=None, key="buscar_fecha")
+            with col2:
+                prod_busqueda = st.selectbox("Buscar por producto", ["Todos"] + PRODUCTOS, key="buscar_prod")
+            st.markdown('</div>', unsafe_allow_html=True)
 
-# --- PESTAÑA CONSOLIDADO (Igual que antes) ---
+        filtrado = historial.copy()
+        if fecha_busqueda is not None:
+            filtrado = filtrado[filtrado["fecha"] == str(fecha_busqueda)]
+        if prod_busqueda != "Todos":
+            filtrado = filtrado[filtrado["producto"] == prod_busqueda]
+
+        if filtrado.empty:
+            st.warning("🔎 No se encontraron registros con esos filtros.")
+        else:
+            filtrado = filtrado.sort_values("fecha", ascending=False)
+            st.markdown(f"**{len(filtrado)} registro(s) encontrado(s)**")
+
+            for idx, row in filtrado.iterrows():
+                # El índice real en la hoja de cálculo es idx + 2 (1 por el header, 1 por índice 0)
+                row_gsheets = idx + 2 
+                
+                with st.expander(f"📅 {row['fecha']} | 📦 {row['producto']} | Final: {int(row['stock_final'])}"):
+                    st.write(f"**Stock inicial:** {int(row['stock_inicial'])}")
+                    st.write(f"**Entradas:** ➕ {int(row['entradas'])}")
+                    st.write(f"**Salidas:** ➖ {int(row['salidas'])}")
+                    st.write(f"**Stock final:** ✅ {int(row['stock_final'])}")
+
+                    # EDICIÓN Y ELIMINACIÓN (Para no hacer el código eterno, usaremos actualización por lote)
+                    if st.button("🗑️ Eliminar este registro", key=f"del_{row['id']}"):
+                        sheet = conectar_sheets()
+                        sheet.delete_rows(row_gsheets)
+                        st.success("🗑️ Registro eliminado")
+                        st.rerun()
+
+# --- PESTAÑA CONSOLIDADO ---
 with tab_consolidado:
     historial = cargar_historial()
     if not historial.empty:
-        # ... (Copia aquí la lógica del groupby que ya tenías)
-        st.write("Consolidado generado.")
+        st.markdown('<div class="card">', unsafe_allow_html=True)
+        st.subheader("📊 Resumen Total por Producto")
+        
+        consolidado = historial.groupby("producto", as_index=False).agg({
+            "stock_inicial": "sum",
+            "entradas": "sum",
+            "salidas": "sum",
+            "stock_final": "sum"
+        })
+        
+        consolidado.columns = ["Producto", "Total Inicial", "Total Entradas", "Total Salidas", "Stock Final Actual"]
+        consolidado = consolidado.sort_values("Producto")
+        
+        st.dataframe(consolidado, use_container_width=True, hide_index=True)
+        st.markdown('</div>', unsafe_allow_html=True)
+    else:
+        st.info("Aún no hay datos para consolidar.")
