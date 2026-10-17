@@ -102,7 +102,7 @@ if "form_version" not in st.session_state:
     st.session_state.form_version = 0
 v = st.session_state.form_version
 
-st.markdown("<h1>📦 Control de Stock</h1>", unsafe_allow_html=True)
+st.markdown("<h1>📦 Control de Custodia</h1>", unsafe_allow_html=True)
 tab_registro, tab_historial, tab_consolidado = st.tabs(["📝 Registrar", "📜 Historial", "📊 Consolidado"])
 
 # --- PESTAÑA REGISTRAR ---
