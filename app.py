@@ -8,7 +8,7 @@ from google.oauth2.service_account import Credentials
 # ----------------------------
 # CONFIGURACIÓN Y ESTILOS
 # ----------------------------
-st.set_page_config(page_title="📦 Control de Stock", page_icon="📦", layout="centered")
+st.set_page_config(page_title="📦 Control de Custodia", page_icon="📦", layout="centered")
 
 st.markdown("""
     <style>
