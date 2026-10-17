@@ -154,17 +154,26 @@ with tab_registro:
     st.metric(label="Resultado", value=f"{stock_final} unidades")
     st.markdown('</div>', unsafe_allow_html=True)
 
-    if st.button("💾 Guardar registro en la nube"):
+        if st.button("💾 Guardar registro en la nube"):
         if stock_final < 0:
             st.error(f"🚨 ¡Ojo! Tienes {nuevo_stock_base} y quieres sacar {salidas}.")
         elif entradas == 0 and salidas == 0 and not actualizar_inicial:
             st.warning("⚠️ No hay movimientos que guardar.")
         else:
-            entrada_real = entradas
-            if actualizar_inicial and nuevo_stock_base != stock_actual:
-                entrada_real += (nuevo_stock_base - stock_actual)
+            # LÓGICA CORREGIDA:
+            # Si actualizó el stock inicial, guardamos ese valor tal cual.
+            # Si no lo actualizó, guardamos el stock que ya teníamos en el sistema.
             
-            guardar_nuevo_registro(fecha, producto, stock_actual, entrada_real, salidas, stock_final)
+            stock_inicial_real = nuevo_stock_base if actualizar_inicial else stock_actual
+            
+            guardar_nuevo_registro(
+                fecha=fecha, 
+                producto=producto, 
+                stock_inicial=stock_inicial_real, 
+                entradas=entradas, 
+                salidas=salidas, 
+                stock_final=stock_final
+            )
             
             st.success(f"✅ Guardado en Google Sheets para **{producto}**")
             st.balloons()
