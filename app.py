@@ -46,9 +46,9 @@ def obtener_hoja(nombre_hoja, headers):
     return sheet
 
 # ----------------------------
-# GESTIÓN DE PRODUCTOS (CON CACHÉ)
+# GESTIÓN DE PRODUCTOS (CACHÉ LARGA)
 # ----------------------------
-@st.cache_data(ttl=60) # Guarda en memoria por 60 segundos para no saturar Google
+@st.cache_data(ttl=300)  # 5 minutos de caché para evitar el 429
 def cargar_productos():
     try:
         sheet = obtener_hoja("Productos", ["id", "nombre"])
@@ -64,7 +64,7 @@ def guardar_producto(nombre):
     try:
         sheet = obtener_hoja("Productos", ["id", "nombre"])
         sheet.append_row([str(uuid.uuid4()), str(nombre).strip()])
-        st.cache_data.clear() # Borra la caché para que aparezca el nuevo producto de inmediato
+        st.cache_data.clear() # Limpia la caché para ver el cambio
     except Exception as e:
         st.error(f"Error al guardar producto: {e}")
 
@@ -74,7 +74,7 @@ def editar_producto(nombre_antiguo, nombre_nuevo):
         cell = sheet.find(nombre_antiguo)
         if cell:
             sheet.update_cell(cell.row, 2, nombre_nuevo.strip())
-        st.cache_data.clear() # Actualiza la caché
+        st.cache_data.clear()
     except Exception as e:
         st.error(f"Error al editar producto: {e}")
 
@@ -84,14 +84,14 @@ def eliminar_producto(nombre):
         cell = sheet.find(nombre)
         if cell:
             sheet.delete_rows(cell.row)
-        st.cache_data.clear() # Actualiza la caché
+        st.cache_data.clear()
     except Exception as e:
         st.error(f"Error al eliminar producto: {e}")
 
 # ----------------------------
-# GESTIÓN DE HISTORIAL (CON CACHÉ)
+# GESTIÓN DE HISTORIAL (CACHÉ LARGA)
 # ----------------------------
-@st.cache_data(ttl=10) # Guarda en memoria por 10 segundos
+@st.cache_data(ttl=300)  # 5 minutos de caché
 def cargar_historial():
     try:
         sheet = obtener_hoja("Sheet1", ["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final"])
@@ -114,7 +114,7 @@ def guardar_nuevo_registro(fecha, producto, stock_inicial, entradas, salidas, st
     try:
         sheet = obtener_hoja("Sheet1", ["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final"])
         sheet.append_row([str(uuid.uuid4()), str(fecha), producto, int(stock_inicial), int(entradas), int(salidas), int(stock_final)])
-        st.cache_data.clear() # Borra la caché para que el nuevo registro se vea rápido
+        st.cache_data.clear() # Limpia caché para ver el nuevo registro
     except Exception as e:
         st.error(f"Error al guardar en Google Sheets: {e}")
 
@@ -133,12 +133,12 @@ tab_registro, tab_historial, tab_consolidado, tab_productos = st.tabs([
 
 # --- PESTAÑA REGISTRAR ---
 with tab_registro:
-    historial_actual = cargar_historial()
-    PRODUCTOS = cargar_productos()
+    PRODUCTOS = cargar_productos() # Se lee de la caché, no de Google
     
     if not PRODUCTOS:
         st.warning("⚠️ No hay productos registrados. Ve a la pestaña '🛠️ Productos' para agregar uno.")
     else:
+        historial_actual = cargar_historial() # Se lee de la caché
         with st.container():
             st.markdown('<div class="card">', unsafe_allow_html=True)
             st.subheader("📅 Fecha y Producto")
