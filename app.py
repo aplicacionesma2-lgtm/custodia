@@ -22,6 +22,14 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ----------------------------
+# LISTA DE RESPONSABLES
+# ----------------------------
+RESPONSABLES = [
+    "Luis Hora", "Diego Chujutalli", "Nayeli Montes", 
+    "Beiker Diaz", "Camila Montalvo", "Oscar Peve", "Ronald Briceño"
+]
+
+# ----------------------------
 # CONEXIÓN A GOOGLE SHEETS
 # ----------------------------
 @st.cache_resource
@@ -56,17 +64,26 @@ def sincronizar_datos(forzar=False):
         records_prod = sheet_prod.get_all_records()
         st.session_state.lista_productos = [str(r["nombre"]).strip() for r in records_prod if "nombre" in r] if records_prod else []
 
-        sheet_hist = obtener_hoja("Sheet1", ["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final"])
+        headers = ["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final", "responsable"]
+        sheet_hist = obtener_hoja("Sheet1", headers)
         records_hist = sheet_hist.get_all_records()
         
         if records_hist:
             df = pd.DataFrame(records_hist)
             df["producto"] = df["producto"].astype(str).str.strip()
+            
+            # Si el Excel no tiene la columna responsable (por los datos viejos), la creamos
+            if "responsable" not in df.columns:
+                df["responsable"] = ""
+                
+            # Rellenamos los vacíos con "Sin asignar" para que se vea bonito
+            df["responsable"] = df["responsable"].astype(str).str.strip().replace('', 'Sin asignar')
+            
             for col in ["stock_inicial", "entradas", "salidas", "stock_final"]:
                 df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
             st.session_state.df_historial = df
         else:
-            st.session_state.df_historial = pd.DataFrame(columns=["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final"])
+            st.session_state.df_historial = pd.DataFrame(columns=headers)
             
     except gspread.exceptions.APIError as e:
         if "429" in str(e):
@@ -85,35 +102,34 @@ if "df_historial" not in st.session_state:
 # ----------------------------
 # FUNCIONES DE GUARDADO Y EDICIÓN
 # ----------------------------
-def guardar_nuevo_registro(fecha, producto, stock_inicial, entradas, salidas, stock_final):
+def guardar_nuevo_registro(fecha, producto, stock_inicial, entradas, salidas, stock_final, responsable):
     try:
-        sheet = obtener_hoja("Sheet1", ["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final"])
+        headers = ["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final", "responsable"]
+        sheet = obtener_hoja("Sheet1", headers)
         nuevo_id = str(uuid.uuid4())
-        sheet.append_row([nuevo_id, str(fecha), producto, int(stock_inicial), int(entradas), int(salidas), int(stock_final)])
         
-        nuevo_df = pd.DataFrame([{"id": nuevo_id, "fecha": str(fecha), "producto": producto, "stock_inicial": int(stock_inicial), "entradas": int(entradas), "salidas": int(salidas), "stock_final": int(stock_final)}])
+        sheet.append_row([nuevo_id, str(fecha), producto, int(stock_inicial), int(entradas), int(salidas), int(stock_final), responsable])
+        
+        nuevo_df = pd.DataFrame([{"id": nuevo_id, "fecha": str(fecha), "producto": producto, "stock_inicial": int(stock_inicial), "entradas": int(entradas), "salidas": int(salidas), "stock_final": int(stock_final), "responsable": responsable}])
         st.session_state.df_historial = pd.concat([st.session_state.df_historial, nuevo_df], ignore_index=True)
         return True
     except Exception as e:
         st.error(f"Error al guardar: {e}")
         return False
 
-def actualizar_registro(registro_id, fecha, producto, entradas, salidas, stock_final):
+def actualizar_registro(registro_id, fecha, producto, entradas, salidas, stock_final, responsable):
     try:
-        sheet = obtener_hoja("Sheet1", ["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final"])
-        # Buscamos la fila donde esté el ID
+        sheet = obtener_hoja("Sheet1", [])
         cell = sheet.find(registro_id)
         if cell:
             row = cell.row
-            # Actualizamos las celdas de esa fila
             sheet.update_cell(row, 2, str(fecha))
             sheet.update_cell(row, 3, producto)
-            # Omitimos la columna 4 (stock_inicial) para no dañar el histórico original
             sheet.update_cell(row, 5, int(entradas))
             sheet.update_cell(row, 6, int(salidas))
             sheet.update_cell(row, 7, int(stock_final))
+            sheet.update_cell(row, 8, responsable) 
             
-            # Actualizar la memoria local
             idx = st.session_state.df_historial[st.session_state.df_historial["id"] == registro_id].index
             if not idx.empty:
                 st.session_state.df_historial.at[idx[0], "fecha"] = str(fecha)
@@ -121,6 +137,7 @@ def actualizar_registro(registro_id, fecha, producto, entradas, salidas, stock_f
                 st.session_state.df_historial.at[idx[0], "entradas"] = int(entradas)
                 st.session_state.df_historial.at[idx[0], "salidas"] = int(salidas)
                 st.session_state.df_historial.at[idx[0], "stock_final"] = int(stock_final)
+                st.session_state.df_historial.at[idx[0], "responsable"] = responsable
             return True
         return False
     except Exception as e:
@@ -186,9 +203,10 @@ with tab_registro:
     else:
         with st.container():
             st.markdown('<div class="card">', unsafe_allow_html=True)
-            st.subheader("📅 Fecha y Producto")
+            st.subheader("📅 Fecha, Producto y Responsable")
             fecha = st.date_input("Selecciona la fecha", value=date.today(), key=f"fecha_{v}")
             producto = st.selectbox("Selecciona el producto", PRODUCTOS, key=f"producto_{v}")
+            responsable = st.selectbox("Responsable de la custodia", RESPONSABLES, key=f"resp_{v}")
             
             stock_actual = 0
             if not historial_actual.empty:
@@ -226,8 +244,8 @@ with tab_registro:
                 stock_inicial_real = nuevo_stock_base if actualizar_inicial else 0
                 stock_final_real = stock_actual + (nuevo_stock_base - stock_actual if actualizar_inicial else 0) + entradas - salidas
                 
-                if guardar_nuevo_registro(fecha, producto, stock_inicial_real, entradas, salidas, stock_final_real):
-                    st.success(f"✅ Guardado para **{producto}**")
+                if guardar_nuevo_registro(fecha, producto, stock_inicial_real, entradas, salidas, stock_final_real, responsable):
+                    st.success(f"✅ Guardado para **{producto}** por **{responsable}**")
                     st.balloons()
                     st.session_state.form_version += 1
                     st.rerun()
@@ -264,7 +282,12 @@ with tab_historial:
 
             for idx, row in filtrado.iterrows():
                 row_gsheets = idx + 2 
-                with st.expander(f"📅 {row['fecha']} | 📦 {row['producto']} | Final: {int(row['stock_final'])}"):
+                resp_mostrar = row.get('responsable', 'Sin asignar')
+                if not resp_mostrar or resp_mostrar == 'nan': 
+                    resp_mostrar = "Sin asignar"
+                
+                with st.expander(f"📅 {row['fecha']} | 📦 {row['producto']} | 👤 {resp_mostrar} | Final: {int(row['stock_final'])}"):
+                    st.write(f"**Responsable:** 👤 {resp_mostrar}")
                     st.write(f"**Stock inicial:** {int(row['stock_inicial'])}")
                     st.write(f"**Entradas:** ➕ {int(row['entradas'])}")
                     st.write(f"**Salidas:** ➖ {int(row['salidas'])}")
@@ -282,7 +305,6 @@ with tab_historial:
                             st.success("🗑️ Registro eliminado")
                             st.rerun()
 
-                    # FORMULARIO DE EDICIÓN
                     if st.session_state.get("editando_id") == row['id']:
                         st.markdown("---")
                         st.markdown("### ✏️ Editando Registro")
@@ -291,10 +313,12 @@ with tab_historial:
                         idx_prod = PRODUCTOS.index(row["producto"]) if row["producto"] in PRODUCTOS else 0
                         edit_producto = st.selectbox("Producto", PRODUCTOS, index=idx_prod, key=f"ed_prod_{row['id']}")
                         
+                        idx_resp = RESPONSABLES.index(resp_mostrar) if resp_mostrar in RESPONSABLES else 0
+                        edit_responsable = st.selectbox("Responsable", RESPONSABLES, index=idx_resp, key=f"ed_resp_{row['id']}")
+                        
                         edit_entradas = st.number_input("Entradas (➕)", min_value=0, step=1, value=int(row["entradas"]), key=f"ed_ent_{row['id']}")
                         edit_salidas = st.number_input("Salidas (➖)", min_value=0, step=1, value=int(row["salidas"]), key=f"ed_sal_{row['id']}")
                         
-                        # Calculamos el nuevo stock final
                         nuevo_final = int(row["stock_inicial"]) + edit_entradas - edit_salidas
                         st.info(f"Nuevo Stock Final calculado: **{nuevo_final}**")
 
@@ -304,7 +328,7 @@ with tab_historial:
                                 if nuevo_final < 0:
                                     st.error("El stock final no puede ser negativo.")
                                 else:
-                                    if actualizar_registro(row['id'], edit_fecha, edit_producto, edit_entradas, edit_salidas, nuevo_final):
+                                    if actualizar_registro(row['id'], edit_fecha, edit_producto, edit_entradas, edit_salidas, nuevo_final, edit_responsable):
                                         st.success("✅ Registro actualizado en la nube")
                                         st.session_state.pop("editando_id", None)
                                         st.rerun()
