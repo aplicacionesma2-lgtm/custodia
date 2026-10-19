@@ -4,7 +4,6 @@ from datetime import date
 import uuid
 import gspread
 from google.oauth2.service_account import Credentials
-import time
 
 # ----------------------------
 # CONFIGURACIÓN Y ESTILOS
@@ -46,20 +45,17 @@ def obtener_hoja(nombre_hoja, headers):
         return sheet
 
 # ----------------------------
-# CARGA DE DATOS (SOLO UNA VEZ POR SESIÓN)
+# CARGA DE DATOS (MEMORIA LOCAL)
 # ----------------------------
 def sincronizar_datos(forzar=False):
-    # Si ya tenemos los datos y no forzamos, no le preguntamos a Google
     if not forzar and "df_historial" in st.session_state and "lista_productos" in st.session_state:
         return
 
     try:
-        # Cargar Productos
         sheet_prod = obtener_hoja("Productos", ["id", "nombre"])
         records_prod = sheet_prod.get_all_records()
         st.session_state.lista_productos = [str(r["nombre"]).strip() for r in records_prod if "nombre" in r] if records_prod else []
 
-        # Cargar Historial
         sheet_hist = obtener_hoja("Sheet1", ["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final"])
         records_hist = sheet_hist.get_all_records()
         
@@ -74,21 +70,20 @@ def sincronizar_datos(forzar=False):
             
     except gspread.exceptions.APIError as e:
         if "429" in str(e):
-            st.error("⏳ Google Sheets está saturado (límite de 60 lecturas por minuto). Por favor, **espera 1 minuto** y recarga la página.")
+            st.error("⏳ Google Sheets está saturado. Espera 1 minuto y recarga la página.")
         else:
             st.error(f"Error de Google Sheets: {e}")
-        st.stop() # Detiene la app para que no siga intentando
+        st.stop()
     except Exception as e:
         st.error(f"Error inesperado: {e}")
         st.stop()
 
-# Llamamos a la sincronización al inicio
 if "df_historial" not in st.session_state:
     with st.spinner("Conectando con la nube..."):
         sincronizar_datos()
 
 # ----------------------------
-# FUNCIONES DE GUARDADO (ESCRIBEN Y ACTUALIZAN MEMORIA)
+# FUNCIONES DE GUARDADO
 # ----------------------------
 def guardar_nuevo_registro(fecha, producto, stock_inicial, entradas, salidas, stock_final):
     try:
@@ -96,7 +91,6 @@ def guardar_nuevo_registro(fecha, producto, stock_inicial, entradas, salidas, st
         nuevo_id = str(uuid.uuid4())
         sheet.append_row([nuevo_id, str(fecha), producto, int(stock_inicial), int(entradas), int(salidas), int(stock_final)])
         
-        # Actualizamos la memoria local sin pedirle a Google
         nuevo_df = pd.DataFrame([{"id": nuevo_id, "fecha": str(fecha), "producto": producto, "stock_inicial": int(stock_inicial), "entradas": int(entradas), "salidas": int(salidas), "stock_final": int(stock_final)}])
         st.session_state.df_historial = pd.concat([st.session_state.df_historial, nuevo_df], ignore_index=True)
         return True
@@ -174,7 +168,7 @@ with tab_registro:
                     stock_actual = int(df_prod["stock_final"].sum())
             
             st.info(f"📦 **Stock actual en sistema:** {stock_actual} unidades")
-            actualizar_inicial = st.checkbox("🔄 Registrar/Actualizar Stock Inicial", key=f"chk_inicial_{v}")
+            actualizar_inicial = st.checkbox("🔄 Registrar/Actualizar Stock Inicial (Solo primera vez o correcciones)", key=f"chk_inicial_{v}")
             
             nuevo_stock_base = stock_actual
             if actualizar_inicial:
@@ -200,8 +194,11 @@ with tab_registro:
             elif entradas == 0 and salidas == 0 and not actualizar_inicial:
                 st.warning("⚠️ No hay movimientos que guardar.")
             else:
-                stock_inicial_real = nuevo_stock_base if actualizar_inicial else stock_actual
-                if guardar_nuevo_registro(fecha, producto, stock_inicial_real, entradas, salidas, stock_final):
+                # LÓGICA CORREGIDA: Si actualiza inicial, guardamos el número. Si no, guardamos 0.
+                stock_inicial_real = nuevo_stock_base if actualizar_inicial else 0
+                stock_final_real = stock_actual + (nuevo_stock_base - stock_actual if actualizar_inicial else 0) + entradas - salidas
+                
+                if guardar_nuevo_registro(fecha, producto, stock_inicial_real, entradas, salidas, stock_final_real):
                     st.success(f"✅ Guardado para **{producto}**")
                     st.balloons()
                     st.session_state.form_version += 1
@@ -248,7 +245,6 @@ with tab_historial:
                     if st.button("🗑️ Eliminar este registro", key=f"del_{row['id']}"):
                         sheet = obtener_hoja("Sheet1", [])
                         sheet.delete_rows(row_gsheets)
-                        # Eliminar de memoria local
                         st.session_state.df_historial = st.session_state.df_historial[st.session_state.df_historial["id"] != row["id"]]
                         st.success("🗑️ Registro eliminado")
                         st.rerun()
@@ -259,11 +255,24 @@ with tab_consolidado:
     if not historial.empty:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.subheader("📊 Resumen Total por Producto")
-        consolidado = historial.groupby("producto", as_index=False).agg({
-            "stock_inicial": "sum", "entradas": "sum", "salidas": "sum", "stock_final": "sum"
-        })
+        
+        # --- SOLUCIÓN AL CONTEO ---
+        # 1. El Stock Inicial Real es el ÚLTIMO stock inicial que se registró para ese producto (o el primero, para no duplicar)
+        # 2. Solo sumamos las entradas y salidas de todos los registros.
+        
+        consolidado = historial.groupby("producto").agg(
+            stock_inicial=("stock_inicial", "max"), # Toma el valor más alto de stock inicial registrado
+            entradas=("entradas", "sum"),
+            salidas=("salidas", "sum"),
+            stock_final=("stock_final", "last") # Toma el último stock final calculado
+        ).reset_index()
+        
         consolidado.columns = ["Producto", "Total Inicial", "Total Entradas", "Total Salidas", "Stock Final Actual"]
         consolidado = consolidado.sort_values("Producto")
+        
+        # Recalculamos el Stock Final por si acaso: Inicial + Entradas - Salidas
+        consolidado["Stock Final Actual"] = consolidado["Total Inicial"] + consolidado["Total Entradas"] - consolidado["Total Salidas"]
+        
         st.dataframe(consolidado, use_container_width=True, hide_index=True)
         st.markdown('</div>', unsafe_allow_html=True)
     else:
