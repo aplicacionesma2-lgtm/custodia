@@ -56,43 +56,41 @@ def obtener_hoja(nombre_hoja, headers):
 # CARGA DE DATOS
 # ----------------------------
 def sincronizar_datos(forzar=False):
-    if not forzar and "df_historial" in st.session_state and "lista_productos" in st.session_state:
-        return
+    if forzar or "df_historial" not in st.session_state or "lista_productos" not in st.session_state:
+        try:
+            # Productos
+            sheet_prod = obtener_hoja("Productos", ["id", "nombre"])
+            records_prod = sheet_prod.get_all_records()
+            st.session_state.lista_productos = [str(r["nombre"]).strip() for r in records_prod if "nombre" in r] if records_prod else []
 
-    try:
-        sheet_prod = obtener_hoja("Productos", ["id", "nombre"])
-        records_prod = sheet_prod.get_all_records()
-        st.session_state.lista_productos = [str(r["nombre"]).strip() for r in records_prod if "nombre" in r] if records_prod else []
-
-        headers = ["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final", "responsable"]
-        sheet_hist = obtener_hoja("Sheet1", headers)
-        records_hist = sheet_hist.get_all_records()
-        
-        if records_hist:
-            df = pd.DataFrame(records_hist)
-            df["producto"] = df["producto"].astype(str).str.strip()
+            # Historial
+            headers = ["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final", "responsable"]
+            sheet_hist = obtener_hoja("Sheet1", headers)
+            records_hist = sheet_hist.get_all_records()
             
-            if "responsable" not in df.columns:
-                df["responsable"] = ""
+            if records_hist:
+                df = pd.DataFrame(records_hist)
+                df["producto"] = df["producto"].astype(str).str.strip()
                 
-            df["responsable"] = df["responsable"].astype(str).str.strip().replace('', 'Sin asignar')
-            
-            for col in ["stock_inicial", "entradas", "salidas", "stock_final"]:
-                df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
-            st.session_state.df_historial = df
-        else:
-            st.session_state.df_historial = pd.DataFrame(columns=headers)
-            
-    except gspread.exceptions.APIError as e:
-        if "429" in str(e):
-            st.error("⏳ Google Sheets está saturado. Espera 1 minuto y recarga la página.")
-        else:
-            st.error(f"Error de Google Sheets: {e}")
-        st.stop()
-    except Exception as e:
-        st.error(f"Error inesperado: {e}")
-        st.stop()
+                if "responsable" not in df.columns:
+                    df["responsable"] = ""
+                    
+                df["responsable"] = df["responsable"].astype(str).str.strip().replace('', 'Sin asignar')
+                
+                # Limpiamos la fecha para que sea siempre un string sin espacios
+                df["fecha"] = df["fecha"].astype(str).str.strip()
 
+                for col in ["stock_inicial", "entradas", "salidas", "stock_final"]:
+                    df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+                st.session_state.df_historial = df
+            else:
+                st.session_state.df_historial = pd.DataFrame(columns=headers)
+                
+            st.success("Datos sincronizados con Google Sheets")
+        except Exception as e:
+            st.error(f"Error al conectar: {e}")
+
+# Hacemos la carga inicial
 if "df_historial" not in st.session_state:
     with st.spinner("Conectando con la nube..."):
         sincronizar_datos()
@@ -106,7 +104,6 @@ def guardar_nuevo_registro(fecha, producto, stock_inicial, entradas, salidas, st
         sheet = obtener_hoja("Sheet1", headers)
         nuevo_id = str(uuid.uuid4())
         
-        # Buscamos la última fila real para escribir justo debajo
         todas_las_filas = sheet.get_all_values()
         ultima_fila = len(todas_las_filas) + 1
         
@@ -192,6 +189,11 @@ if "form_version" not in st.session_state:
     st.session_state.form_version = 0
 v = st.session_state.form_version
 
+# Botón para forzar la lectura de Google Sheets
+if st.button("🔄 Sincronizar / Refrescar datos"):
+    sincronizar_datos(forzar=True)
+    st.rerun()
+
 tab_registro, tab_historial, tab_consolidado, tab_productos = st.tabs([
     "📝 Registrar", "📜 Historial", "📊 Consolidado", "🛠️ Productos"
 ])
@@ -272,6 +274,8 @@ with tab_historial:
             st.markdown('</div>', unsafe_allow_html=True)
 
         filtrado = historial.copy()
+        
+        # SOLUCIÓN AL BUSCADOR: Comparamos como texto
         if fecha_busqueda is not None:
             filtrado = filtrado[filtrado["fecha"] == str(fecha_busqueda)]
         if prod_busqueda != "Todos":
