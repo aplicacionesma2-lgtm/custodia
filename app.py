@@ -45,7 +45,7 @@ def obtener_hoja(nombre_hoja, headers):
         return sheet
 
 # ----------------------------
-# CARGA DE DATOS (MEMORIA LOCAL)
+# CARGA DE DATOS
 # ----------------------------
 def sincronizar_datos(forzar=False):
     if not forzar and "df_historial" in st.session_state and "lista_productos" in st.session_state:
@@ -83,7 +83,7 @@ if "df_historial" not in st.session_state:
         sincronizar_datos()
 
 # ----------------------------
-# FUNCIONES DE GUARDADO
+# FUNCIONES DE GUARDADO Y EDICIÓN
 # ----------------------------
 def guardar_nuevo_registro(fecha, producto, stock_inicial, entradas, salidas, stock_final):
     try:
@@ -96,6 +96,35 @@ def guardar_nuevo_registro(fecha, producto, stock_inicial, entradas, salidas, st
         return True
     except Exception as e:
         st.error(f"Error al guardar: {e}")
+        return False
+
+def actualizar_registro(registro_id, fecha, producto, entradas, salidas, stock_final):
+    try:
+        sheet = obtener_hoja("Sheet1", ["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final"])
+        # Buscamos la fila donde esté el ID
+        cell = sheet.find(registro_id)
+        if cell:
+            row = cell.row
+            # Actualizamos las celdas de esa fila
+            sheet.update_cell(row, 2, str(fecha))
+            sheet.update_cell(row, 3, producto)
+            # Omitimos la columna 4 (stock_inicial) para no dañar el histórico original
+            sheet.update_cell(row, 5, int(entradas))
+            sheet.update_cell(row, 6, int(salidas))
+            sheet.update_cell(row, 7, int(stock_final))
+            
+            # Actualizar la memoria local
+            idx = st.session_state.df_historial[st.session_state.df_historial["id"] == registro_id].index
+            if not idx.empty:
+                st.session_state.df_historial.at[idx[0], "fecha"] = str(fecha)
+                st.session_state.df_historial.at[idx[0], "producto"] = producto
+                st.session_state.df_historial.at[idx[0], "entradas"] = int(entradas)
+                st.session_state.df_historial.at[idx[0], "salidas"] = int(salidas)
+                st.session_state.df_historial.at[idx[0], "stock_final"] = int(stock_final)
+            return True
+        return False
+    except Exception as e:
+        st.error(f"Error al actualizar: {e}")
         return False
 
 def crear_producto(nombre):
@@ -194,7 +223,6 @@ with tab_registro:
             elif entradas == 0 and salidas == 0 and not actualizar_inicial:
                 st.warning("⚠️ No hay movimientos que guardar.")
             else:
-                # LÓGICA CORREGIDA: Si actualiza inicial, guardamos el número. Si no, guardamos 0.
                 stock_inicial_real = nuevo_stock_base if actualizar_inicial else 0
                 stock_final_real = stock_actual + (nuevo_stock_base - stock_actual if actualizar_inicial else 0) + entradas - salidas
                 
@@ -242,12 +270,48 @@ with tab_historial:
                     st.write(f"**Salidas:** ➖ {int(row['salidas'])}")
                     st.write(f"**Stock final:** ✅ {int(row['stock_final'])}")
 
-                    if st.button("🗑️ Eliminar este registro", key=f"del_{row['id']}"):
-                        sheet = obtener_hoja("Sheet1", [])
-                        sheet.delete_rows(row_gsheets)
-                        st.session_state.df_historial = st.session_state.df_historial[st.session_state.df_historial["id"] != row["id"]]
-                        st.success("🗑️ Registro eliminado")
-                        st.rerun()
+                    col_edit, col_del = st.columns(2)
+                    with col_edit:
+                        if st.button("✏️ Editar", key=f"edit_{row['id']}"):
+                            st.session_state["editando_id"] = row['id']
+                    with col_del:
+                        if st.button("🗑️ Eliminar", key=f"del_{row['id']}"):
+                            sheet = obtener_hoja("Sheet1", [])
+                            sheet.delete_rows(row_gsheets)
+                            st.session_state.df_historial = st.session_state.df_historial[st.session_state.df_historial["id"] != row["id"]]
+                            st.success("🗑️ Registro eliminado")
+                            st.rerun()
+
+                    # FORMULARIO DE EDICIÓN
+                    if st.session_state.get("editando_id") == row['id']:
+                        st.markdown("---")
+                        st.markdown("### ✏️ Editando Registro")
+                        
+                        edit_fecha = st.date_input("Fecha", value=pd.to_datetime(row["fecha"]).date(), key=f"ed_fecha_{row['id']}")
+                        idx_prod = PRODUCTOS.index(row["producto"]) if row["producto"] in PRODUCTOS else 0
+                        edit_producto = st.selectbox("Producto", PRODUCTOS, index=idx_prod, key=f"ed_prod_{row['id']}")
+                        
+                        edit_entradas = st.number_input("Entradas (➕)", min_value=0, step=1, value=int(row["entradas"]), key=f"ed_ent_{row['id']}")
+                        edit_salidas = st.number_input("Salidas (➖)", min_value=0, step=1, value=int(row["salidas"]), key=f"ed_sal_{row['id']}")
+                        
+                        # Calculamos el nuevo stock final
+                        nuevo_final = int(row["stock_inicial"]) + edit_entradas - edit_salidas
+                        st.info(f"Nuevo Stock Final calculado: **{nuevo_final}**")
+
+                        col_save, col_cancel = st.columns(2)
+                        with col_save:
+                            if st.button("💾 Guardar Cambios", key=f"save_{row['id']}"):
+                                if nuevo_final < 0:
+                                    st.error("El stock final no puede ser negativo.")
+                                else:
+                                    if actualizar_registro(row['id'], edit_fecha, edit_producto, edit_entradas, edit_salidas, nuevo_final):
+                                        st.success("✅ Registro actualizado en la nube")
+                                        st.session_state.pop("editando_id", None)
+                                        st.rerun()
+                        with col_cancel:
+                            if st.button("❌ Cancelar", key=f"cancel_{row['id']}"):
+                                st.session_state.pop("editando_id", None)
+                                st.rerun()
 
 # --- PESTAÑA CONSOLIDADO ---
 with tab_consolidado:
@@ -256,21 +320,15 @@ with tab_consolidado:
         st.markdown('<div class="card">', unsafe_allow_html=True)
         st.subheader("📊 Resumen Total por Producto")
         
-        # --- SOLUCIÓN AL CONTEO ---
-        # 1. El Stock Inicial Real es el ÚLTIMO stock inicial que se registró para ese producto (o el primero, para no duplicar)
-        # 2. Solo sumamos las entradas y salidas de todos los registros.
-        
         consolidado = historial.groupby("producto").agg(
-            stock_inicial=("stock_inicial", "max"), # Toma el valor más alto de stock inicial registrado
+            stock_inicial=("stock_inicial", "max"),
             entradas=("entradas", "sum"),
             salidas=("salidas", "sum"),
-            stock_final=("stock_final", "last") # Toma el último stock final calculado
+            stock_final=("stock_final", "last")
         ).reset_index()
         
         consolidado.columns = ["Producto", "Total Inicial", "Total Entradas", "Total Salidas", "Stock Final Actual"]
         consolidado = consolidado.sort_values("Producto")
-        
-        # Recalculamos el Stock Final por si acaso: Inicial + Entradas - Salidas
         consolidado["Stock Final Actual"] = consolidado["Total Inicial"] + consolidado["Total Entradas"] - consolidado["Total Salidas"]
         
         st.dataframe(consolidado, use_container_width=True, hide_index=True)
