@@ -58,12 +58,10 @@ def obtener_hoja(nombre_hoja, headers):
 def sincronizar_datos(forzar=False):
     if forzar or "df_historial" not in st.session_state or "lista_productos" not in st.session_state:
         try:
-            # Productos
             sheet_prod = obtener_hoja("Productos", ["id", "nombre"])
             records_prod = sheet_prod.get_all_records()
             st.session_state.lista_productos = [str(r["nombre"]).strip() for r in records_prod if "nombre" in r] if records_prod else []
 
-            # Historial
             headers = ["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final", "responsable"]
             sheet_hist = obtener_hoja("Sheet1", headers)
             records_hist = sheet_hist.get_all_records()
@@ -76,8 +74,6 @@ def sincronizar_datos(forzar=False):
                     df["responsable"] = ""
                     
                 df["responsable"] = df["responsable"].astype(str).str.strip().replace('', 'Sin asignar')
-                
-                # Limpiamos la fecha para que sea siempre un string sin espacios
                 df["fecha"] = df["fecha"].astype(str).str.strip()
 
                 for col in ["stock_inicial", "entradas", "salidas", "stock_final"]:
@@ -90,13 +86,12 @@ def sincronizar_datos(forzar=False):
         except Exception as e:
             st.error(f"Error al conectar: {e}")
 
-# Hacemos la carga inicial
 if "df_historial" not in st.session_state:
     with st.spinner("Conectando con la nube..."):
         sincronizar_datos()
 
 # ----------------------------
-# FUNCIONES DE GUARDADO Y EDICIÓN
+# FUNCIONES DE GUARDADO Y EDICIÓN (LA CURA)
 # ----------------------------
 def guardar_nuevo_registro(fecha, producto, stock_inicial, entradas, salidas, stock_final, responsable):
     try:
@@ -104,11 +99,12 @@ def guardar_nuevo_registro(fecha, producto, stock_inicial, entradas, salidas, st
         sheet = obtener_hoja("Sheet1", headers)
         nuevo_id = str(uuid.uuid4())
         
-        todas_las_filas = sheet.get_all_values()
-        ultima_fila = len(todas_las_filas) + 1
+        # En lugar de contar filas vacías, usamos los registros reales para saber dónde escribir
+        records = sheet.get_all_records()
+        ultima_fila_real = len(records) + 2 # +1 por el header, +1 porque empieza en 1
         
         nueva_data = [nuevo_id, str(fecha), producto, int(stock_inicial), int(entradas), int(salidas), int(stock_final), responsable]
-        sheet.update(values=[nueva_data], range_name=f"A{ultima_fila}:H{ultima_fila}")
+        sheet.update(values=[nueva_data], range_name=f"A{ultima_fila_real}:H{ultima_fila_real}")
         
         nuevo_df = pd.DataFrame([{"id": nuevo_id, "fecha": str(fecha), "producto": producto, "stock_inicial": int(stock_inicial), "entradas": int(entradas), "salidas": int(salidas), "stock_final": int(stock_final), "responsable": responsable}])
         st.session_state.df_historial = pd.concat([st.session_state.df_historial, nuevo_df], ignore_index=True)
@@ -189,7 +185,6 @@ if "form_version" not in st.session_state:
     st.session_state.form_version = 0
 v = st.session_state.form_version
 
-# Botón para forzar la lectura de Google Sheets
 if st.button("🔄 Sincronizar / Refrescar datos"):
     sincronizar_datos(forzar=True)
     st.rerun()
@@ -274,8 +269,6 @@ with tab_historial:
             st.markdown('</div>', unsafe_allow_html=True)
 
         filtrado = historial.copy()
-        
-        # SOLUCIÓN AL BUSCADOR: Comparamos como texto
         if fecha_busqueda is not None:
             filtrado = filtrado[filtrado["fecha"] == str(fecha_busqueda)]
         if prod_busqueda != "Todos":
