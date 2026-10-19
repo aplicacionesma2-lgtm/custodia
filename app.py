@@ -72,11 +72,9 @@ def sincronizar_datos(forzar=False):
             df = pd.DataFrame(records_hist)
             df["producto"] = df["producto"].astype(str).str.strip()
             
-            # Si el Excel no tiene la columna responsable (por los datos viejos), la creamos
             if "responsable" not in df.columns:
                 df["responsable"] = ""
                 
-            # Rellenamos los vacíos con "Sin asignar" para que se vea bonito
             df["responsable"] = df["responsable"].astype(str).str.strip().replace('', 'Sin asignar')
             
             for col in ["stock_inicial", "entradas", "salidas", "stock_final"]:
@@ -108,7 +106,12 @@ def guardar_nuevo_registro(fecha, producto, stock_inicial, entradas, salidas, st
         sheet = obtener_hoja("Sheet1", headers)
         nuevo_id = str(uuid.uuid4())
         
-        sheet.append_row([nuevo_id, str(fecha), producto, int(stock_inicial), int(entradas), int(salidas), int(stock_final), responsable])
+        # Buscamos la última fila real para escribir justo debajo
+        todas_las_filas = sheet.get_all_values()
+        ultima_fila = len(todas_las_filas) + 1
+        
+        nueva_data = [nuevo_id, str(fecha), producto, int(stock_inicial), int(entradas), int(salidas), int(stock_final), responsable]
+        sheet.update(values=[nueva_data], range_name=f"A{ultima_fila}:H{ultima_fila}")
         
         nuevo_df = pd.DataFrame([{"id": nuevo_id, "fecha": str(fecha), "producto": producto, "stock_inicial": int(stock_inicial), "entradas": int(entradas), "salidas": int(salidas), "stock_final": int(stock_final), "responsable": responsable}])
         st.session_state.df_historial = pd.concat([st.session_state.df_historial, nuevo_df], ignore_index=True)
