@@ -64,25 +64,31 @@ def sincronizar_datos(forzar=False):
 
             headers = ["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final", "responsable"]
             sheet_hist = obtener_hoja("Sheet1", headers)
-            records_hist = sheet_hist.get_all_records()
+            valores_crudos = sheet_hist.get_all_values()
             
-            if records_hist:
-                df = pd.DataFrame(records_hist)
+            if len(valores_crudos) > 1:
+                filas_datos = valores_crudos[1:]
+                df = pd.DataFrame(filas_datos, columns=headers)
+                
+                # Limpiamos filas vacías
+                df = df[df["id"].astype(str).str.strip() != ""] 
+                
                 df["producto"] = df["producto"].astype(str).str.strip()
+                # Guardamos la fecha como texto limpio para el buscador
+                df["fecha_texto"] = df["fecha"].astype(str).str.strip()
                 
                 if "responsable" not in df.columns:
                     df["responsable"] = ""
-                    
                 df["responsable"] = df["responsable"].astype(str).str.strip().replace('', 'Sin asignar')
-                df["fecha"] = df["fecha"].astype(str).str.strip()
-
+                
                 for col in ["stock_inicial", "entradas", "salidas", "stock_final"]:
                     df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
+                
                 st.session_state.df_historial = df
             else:
-                st.session_state.df_historial = pd.DataFrame(columns=headers)
+                st.session_state.df_historial = pd.DataFrame(columns=headers + ["fecha_texto"])
                 
-            st.success("Datos sincronizados con Google Sheets")
+            st.success("¡Datos sincronizados desde la nube!")
         except Exception as e:
             st.error(f"Error al conectar: {e}")
 
@@ -91,7 +97,7 @@ if "df_historial" not in st.session_state:
         sincronizar_datos()
 
 # ----------------------------
-# FUNCIONES DE GUARDADO Y EDICIÓN (LA CURA)
+# GUARDADO SEGURO
 # ----------------------------
 def guardar_nuevo_registro(fecha, producto, stock_inicial, entradas, salidas, stock_final, responsable):
     try:
@@ -99,14 +105,15 @@ def guardar_nuevo_registro(fecha, producto, stock_inicial, entradas, salidas, st
         sheet = obtener_hoja("Sheet1", headers)
         nuevo_id = str(uuid.uuid4())
         
-        # En lugar de contar filas vacías, usamos los registros reales para saber dónde escribir
-        records = sheet.get_all_records()
-        ultima_fila_real = len(records) + 2 # +1 por el header, +1 porque empieza en 1
+        valores = sheet.get_all_values()
+        ultima_fila = len(valores) + 1
         
-        nueva_data = [nuevo_id, str(fecha), producto, int(stock_inicial), int(entradas), int(salidas), int(stock_final), responsable]
-        sheet.update(values=[nueva_data], range_name=f"A{ultima_fila_real}:H{ultima_fila_real}")
+        fecha_str = str(fecha)
         
-        nuevo_df = pd.DataFrame([{"id": nuevo_id, "fecha": str(fecha), "producto": producto, "stock_inicial": int(stock_inicial), "entradas": int(entradas), "salidas": int(salidas), "stock_final": int(stock_final), "responsable": responsable}])
+        nueva_data = [nuevo_id, fecha_str, producto, int(stock_inicial), int(entradas), int(salidas), int(stock_final), responsable]
+        sheet.update(values=[nueva_data], range_name=f"A{ultima_fila}:H{ultima_fila}")
+        
+        nuevo_df = pd.DataFrame([{"id": nuevo_id, "fecha": fecha_str, "fecha_texto": fecha_str, "producto": producto, "stock_inicial": int(stock_inicial), "entradas": int(entradas), "salidas": int(salidas), "stock_final": int(stock_final), "responsable": responsable}])
         st.session_state.df_historial = pd.concat([st.session_state.df_historial, nuevo_df], ignore_index=True)
         return True
     except Exception as e:
@@ -129,6 +136,7 @@ def actualizar_registro(registro_id, fecha, producto, entradas, salidas, stock_f
             idx = st.session_state.df_historial[st.session_state.df_historial["id"] == registro_id].index
             if not idx.empty:
                 st.session_state.df_historial.at[idx[0], "fecha"] = str(fecha)
+                st.session_state.df_historial.at[idx[0], "fecha_texto"] = str(fecha)
                 st.session_state.df_historial.at[idx[0], "producto"] = producto
                 st.session_state.df_historial.at[idx[0], "entradas"] = int(entradas)
                 st.session_state.df_historial.at[idx[0], "salidas"] = int(salidas)
@@ -269,15 +277,19 @@ with tab_historial:
             st.markdown('</div>', unsafe_allow_html=True)
 
         filtrado = historial.copy()
+        
+        # 🔥 AQUÍ ESTÁ LA MAGIA DEL BUSCADOR 🔥
         if fecha_busqueda is not None:
-            filtrado = filtrado[filtrado["fecha"] == str(fecha_busqueda)]
+            # Buscamos que el texto de la fecha en Excel contenga el texto de la fecha seleccionada
+            filtrado = filtrado[filtrado["fecha_texto"].str.contains(str(fecha_busqueda), na=False)]
+            
         if prod_busqueda != "Todos":
             filtrado = filtrado[filtrado["producto"] == prod_busqueda]
 
         if filtrado.empty:
             st.warning("🔎 No se encontraron registros con esos filtros.")
         else:
-            filtrado = filtrado.sort_values("fecha", ascending=False)
+            filtrado = filtrado.sort_values("fecha_texto", ascending=False)
             st.markdown(f"**{len(filtrado)} registro(s) encontrado(s)**")
 
             for idx, row in filtrado.iterrows():
@@ -286,7 +298,7 @@ with tab_historial:
                 if not resp_mostrar or resp_mostrar == 'nan': 
                     resp_mostrar = "Sin asignar"
                 
-                with st.expander(f"📅 {row['fecha']} | 📦 {row['producto']} | 👤 {resp_mostrar} | Final: {int(row['stock_final'])}"):
+                with st.expander(f"📅 {row['fecha_texto']} | 📦 {row['producto']} | 👤 {resp_mostrar} | Final: {int(row['stock_final'])}"):
                     st.write(f"**Responsable:** 👤 {resp_mostrar}")
                     st.write(f"**Stock inicial:** {int(row['stock_inicial'])}")
                     st.write(f"**Entradas:** ➕ {int(row['entradas'])}")
@@ -309,7 +321,13 @@ with tab_historial:
                         st.markdown("---")
                         st.markdown("### ✏️ Editando Registro")
                         
-                        edit_fecha = st.date_input("Fecha", value=pd.to_datetime(row["fecha"]).date(), key=f"ed_fecha_{row['id']}")
+                        # Tratamos de convertir la fecha de vuelta a un objeto date para el calendario
+                        try:
+                            fecha_dt = pd.to_datetime(row["fecha_texto"]).date()
+                        except:
+                            fecha_dt = date.today()
+
+                        edit_fecha = st.date_input("Fecha", value=fecha_dt, key=f"ed_fecha_{row['id']}")
                         idx_prod = PRODUCTOS.index(row["producto"]) if row["producto"] in PRODUCTOS else 0
                         edit_producto = st.selectbox("Producto", PRODUCTOS, index=idx_prod, key=f"ed_prod_{row['id']}")
                         
