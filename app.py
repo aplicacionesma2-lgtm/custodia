@@ -239,8 +239,6 @@ with tab_registro:
                 if not df_prod.empty:
                     stock_actual = int(df_prod["stock_final"].sum())
             
-            # El mensaje st.info fue eliminado de aquí
-            
             actualizar_inicial = st.checkbox("🔄 Registrar/Actualizar Stock Inicial (Solo primera vez o correcciones)", key=f"chk_inicial_{v}")
             
             nuevo_stock_base = stock_actual
@@ -256,10 +254,7 @@ with tab_registro:
             stock_final = nuevo_stock_base + entradas - salidas
             st.markdown('</div>', unsafe_allow_html=True)
 
-        st.markdown('<div class="card">', unsafe_allow_html=True)
-        st.subheader("✅ Stock Final Proyectado")
-        st.metric(label="Resultado", value=f"{stock_final} unidades")
-        st.markdown('</div>', unsafe_allow_html=True)
+        # ELIMINADO POR COMPLETO EL MENSAJE DE STOCK FINAL PROYECTADO
 
         if st.button("💾 Guardar registro en la nube"):
             if stock_final < 0:
@@ -395,8 +390,8 @@ with tab_consolidado:
         consolidado = consolidado.sort_values("Producto")
         consolidado["Stock Final Actual"] = consolidado["Total Inicial"] + consolidado["Total Entradas"] - consolidado["Total Salidas"]
         
-        # 🔥 AQUÍ ESTÁ EL CAMBIO: SIN EL HEIGHT, PARA QUE SE VEA TODA LA TABLA 🔥
-        st.dataframe(consolidado, use_container_width=True, hide_index=True)
+        # Usamos st.dataframe sin el height para que muestre la tabla limpia (si aún sale scroll, usamos st.table)
+        st.table(consolidado)
         
         st.markdown('</div>', unsafe_allow_html=True)
     else:
