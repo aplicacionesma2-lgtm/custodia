@@ -239,6 +239,8 @@ with tab_registro:
                 if not df_prod.empty:
                     stock_actual = int(df_prod["stock_final"].sum())
             
+            # El mensaje st.info fue eliminado de aquí
+            
             actualizar_inicial = st.checkbox("🔄 Registrar/Actualizar Stock Inicial (Solo primera vez o correcciones)", key=f"chk_inicial_{v}")
             
             nuevo_stock_base = stock_actual
@@ -393,8 +395,8 @@ with tab_consolidado:
         consolidado = consolidado.sort_values("Producto")
         consolidado["Stock Final Actual"] = consolidado["Total Inicial"] + consolidado["Total Entradas"] - consolidado["Total Salidas"]
         
-        # 🔥 AQUÍ ESTÁ EL CAMBIO DE ALTURA 🔥
-        st.dataframe(consolidado, use_container_width=True, hide_index=True, height=450)
+        # 🔥 AQUÍ ESTÁ EL CAMBIO: SIN EL HEIGHT, PARA QUE SE VEA TODA LA TABLA 🔥
+        st.dataframe(consolidado, use_container_width=True, hide_index=True)
         
         st.markdown('</div>', unsafe_allow_html=True)
     else:
