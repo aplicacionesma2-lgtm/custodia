@@ -62,24 +62,31 @@ def sincronizar_datos(forzar=False):
             records_prod = sheet_prod.get_all_records()
             st.session_state.lista_productos = [str(r["nombre"]).strip() for r in records_prod if "nombre" in r] if records_prod else []
 
-            headers = ["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final", "responsable"]
+            headers = ["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final", "responsable", "pallet"]
             sheet_hist = obtener_hoja("Sheet1", headers)
             valores_crudos = sheet_hist.get_all_values()
             
             if len(valores_crudos) > 1:
                 filas_datos = valores_crudos[1:]
-                df = pd.DataFrame(filas_datos, columns=headers)
+                # Rellenamos las filas con menos columnas para que no falle al crear el DataFrame
+                filas_normalizadas = []
+                for fila in filas_datos:
+                    fila_ajustada = fila + [""] * (len(headers) - len(fila))
+                    filas_normalizadas.append(fila_ajustada[:len(headers)])
                 
-                # Limpiamos filas vacías
+                df = pd.DataFrame(filas_normalizadas, columns=headers)
                 df = df[df["id"].astype(str).str.strip() != ""] 
                 
                 df["producto"] = df["producto"].astype(str).str.strip()
-                # Guardamos la fecha como texto limpio para el buscador
                 df["fecha_texto"] = df["fecha"].astype(str).str.strip()
                 
                 if "responsable" not in df.columns:
                     df["responsable"] = ""
                 df["responsable"] = df["responsable"].astype(str).str.strip().replace('', 'Sin asignar')
+
+                if "pallet" not in df.columns:
+                    df["pallet"] = ""
+                df["pallet"] = df["pallet"].astype(str).str.strip().replace('', '-')
                 
                 for col in ["stock_inicial", "entradas", "salidas", "stock_final"]:
                     df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
@@ -99,9 +106,9 @@ if "df_historial" not in st.session_state:
 # ----------------------------
 # GUARDADO SEGURO
 # ----------------------------
-def guardar_nuevo_registro(fecha, producto, stock_inicial, entradas, salidas, stock_final, responsable):
+def guardar_nuevo_registro(fecha, producto, stock_inicial, entradas, salidas, stock_final, responsable, pallet):
     try:
-        headers = ["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final", "responsable"]
+        headers = ["id", "fecha", "producto", "stock_inicial", "entradas", "salidas", "stock_final", "responsable", "pallet"]
         sheet = obtener_hoja("Sheet1", headers)
         nuevo_id = str(uuid.uuid4())
         
@@ -109,18 +116,24 @@ def guardar_nuevo_registro(fecha, producto, stock_inicial, entradas, salidas, st
         ultima_fila = len(valores) + 1
         
         fecha_str = str(fecha)
+        pallet_str = str(pallet).strip() if pallet else "-"
         
-        nueva_data = [nuevo_id, fecha_str, producto, int(stock_inicial), int(entradas), int(salidas), int(stock_final), responsable]
-        sheet.update(values=[nueva_data], range_name=f"A{ultima_fila}:H{ultima_fila}")
+        nueva_data = [nuevo_id, fecha_str, producto, int(stock_inicial), int(entradas), int(salidas), int(stock_final), responsable, pallet_str]
+        sheet.update(values=[nueva_data], range_name=f"A{ultima_fila}:I{ultima_fila}")
         
-        nuevo_df = pd.DataFrame([{"id": nuevo_id, "fecha": fecha_str, "fecha_texto": fecha_str, "producto": producto, "stock_inicial": int(stock_inicial), "entradas": int(entradas), "salidas": int(salidas), "stock_final": int(stock_final), "responsable": responsable}])
+        nuevo_df = pd.DataFrame([{
+            "id": nuevo_id, "fecha": fecha_str, "fecha_texto": fecha_str, 
+            "producto": producto, "stock_inicial": int(stock_inicial), 
+            "entradas": int(entradas), "salidas": int(salidas), 
+            "stock_final": int(stock_final), "responsable": responsable, "pallet": pallet_str
+        }])
         st.session_state.df_historial = pd.concat([st.session_state.df_historial, nuevo_df], ignore_index=True)
         return True
     except Exception as e:
         st.error(f"Error al guardar: {e}")
         return False
 
-def actualizar_registro(registro_id, fecha, producto, entradas, salidas, stock_final, responsable):
+def actualizar_registro(registro_id, fecha, producto, entradas, salidas, stock_final, responsable, pallet):
     try:
         sheet = obtener_hoja("Sheet1", [])
         cell = sheet.find(registro_id)
@@ -132,6 +145,7 @@ def actualizar_registro(registro_id, fecha, producto, entradas, salidas, stock_f
             sheet.update_cell(row, 6, int(salidas))
             sheet.update_cell(row, 7, int(stock_final))
             sheet.update_cell(row, 8, responsable) 
+            sheet.update_cell(row, 9, str(pallet).strip()) 
             
             idx = st.session_state.df_historial[st.session_state.df_historial["id"] == registro_id].index
             if not idx.empty:
@@ -142,6 +156,7 @@ def actualizar_registro(registro_id, fecha, producto, entradas, salidas, stock_f
                 st.session_state.df_historial.at[idx[0], "salidas"] = int(salidas)
                 st.session_state.df_historial.at[idx[0], "stock_final"] = int(stock_final)
                 st.session_state.df_historial.at[idx[0], "responsable"] = responsable
+                st.session_state.df_historial.at[idx[0], "pallet"] = str(pallet).strip()
             return True
         return False
     except Exception as e:
@@ -214,6 +229,10 @@ with tab_registro:
             st.subheader("📅 Fecha, Producto y Responsable")
             fecha = st.date_input("Selecciona la fecha", value=date.today(), key=f"fecha_{v}")
             producto = st.selectbox("Selecciona el producto", PRODUCTOS, key=f"producto_{v}")
+            
+            # NUEVO CAMPO DE PALLET
+            pallet = st.text_input("Número de Pallet (Opcional)", placeholder="Ej: P-1024", key=f"pallet_{v}")
+            
             responsable = st.selectbox("Responsable de la custodia", RESPONSABLES, key=f"resp_{v}")
             
             stock_actual = 0
@@ -252,7 +271,7 @@ with tab_registro:
                 stock_inicial_real = nuevo_stock_base if actualizar_inicial else 0
                 stock_final_real = stock_actual + (nuevo_stock_base - stock_actual if actualizar_inicial else 0) + entradas - salidas
                 
-                if guardar_nuevo_registro(fecha, producto, stock_inicial_real, entradas, salidas, stock_final_real, responsable):
+                if guardar_nuevo_registro(fecha, producto, stock_inicial_real, entradas, salidas, stock_final_real, responsable, pallet):
                     st.success(f"✅ Guardado para **{producto}** por **{responsable}**")
                     st.balloons()
                     st.session_state.form_version += 1
@@ -278,9 +297,7 @@ with tab_historial:
 
         filtrado = historial.copy()
         
-        # 🔥 AQUÍ ESTÁ LA MAGIA DEL BUSCADOR 🔥
         if fecha_busqueda is not None:
-            # Buscamos que el texto de la fecha en Excel contenga el texto de la fecha seleccionada
             filtrado = filtrado[filtrado["fecha_texto"].str.contains(str(fecha_busqueda), na=False)]
             
         if prod_busqueda != "Todos":
@@ -298,8 +315,13 @@ with tab_historial:
                 if not resp_mostrar or resp_mostrar == 'nan': 
                     resp_mostrar = "Sin asignar"
                 
-                with st.expander(f"📅 {row['fecha_texto']} | 📦 {row['producto']} | 👤 {resp_mostrar} | Final: {int(row['stock_final'])}"):
+                pallet_mostrar = row.get('pallet', '-')
+                if not pallet_mostrar or pallet_mostrar == 'nan': 
+                    pallet_mostrar = "-"
+                
+                with st.expander(f"📅 {row['fecha_texto']} | 📦 {row['producto']} | 🪵 {pallet_mostrar} | 👤 {resp_mostrar}"):
                     st.write(f"**Responsable:** 👤 {resp_mostrar}")
+                    st.write(f"**Número de Pallet:** 🪵 {pallet_mostrar}")
                     st.write(f"**Stock inicial:** {int(row['stock_inicial'])}")
                     st.write(f"**Entradas:** ➕ {int(row['entradas'])}")
                     st.write(f"**Salidas:** ➖ {int(row['salidas'])}")
@@ -321,7 +343,6 @@ with tab_historial:
                         st.markdown("---")
                         st.markdown("### ✏️ Editando Registro")
                         
-                        # Tratamos de convertir la fecha de vuelta a un objeto date para el calendario
                         try:
                             fecha_dt = pd.to_datetime(row["fecha_texto"]).date()
                         except:
@@ -330,6 +351,8 @@ with tab_historial:
                         edit_fecha = st.date_input("Fecha", value=fecha_dt, key=f"ed_fecha_{row['id']}")
                         idx_prod = PRODUCTOS.index(row["producto"]) if row["producto"] in PRODUCTOS else 0
                         edit_producto = st.selectbox("Producto", PRODUCTOS, index=idx_prod, key=f"ed_prod_{row['id']}")
+                        
+                        edit_pallet = st.text_input("Número de Pallet", value=pallet_mostrar, key=f"ed_pallet_{row['id']}")
                         
                         idx_resp = RESPONSABLES.index(resp_mostrar) if resp_mostrar in RESPONSABLES else 0
                         edit_responsable = st.selectbox("Responsable", RESPONSABLES, index=idx_resp, key=f"ed_resp_{row['id']}")
@@ -346,7 +369,7 @@ with tab_historial:
                                 if nuevo_final < 0:
                                     st.error("El stock final no puede ser negativo.")
                                 else:
-                                    if actualizar_registro(row['id'], edit_fecha, edit_producto, edit_entradas, edit_salidas, nuevo_final, edit_responsable):
+                                    if actualizar_registro(row['id'], edit_fecha, edit_producto, edit_entradas, edit_salidas, nuevo_final, edit_responsable, edit_pallet):
                                         st.success("✅ Registro actualizado en la nube")
                                         st.session_state.pop("editando_id", None)
                                         st.rerun()
