@@ -68,7 +68,6 @@ def sincronizar_datos(forzar=False):
             
             if len(valores_crudos) > 1:
                 filas_datos = valores_crudos[1:]
-                # Rellenamos las filas con menos columnas para que no falle al crear el DataFrame
                 filas_normalizadas = []
                 for fila in filas_datos:
                     fila_ajustada = fila + [""] * (len(headers) - len(fila))
@@ -230,7 +229,6 @@ with tab_registro:
             fecha = st.date_input("Selecciona la fecha", value=date.today(), key=f"fecha_{v}")
             producto = st.selectbox("Selecciona el producto", PRODUCTOS, key=f"producto_{v}")
             
-            # NUEVO CAMPO DE PALLET
             pallet = st.text_input("Número de Pallet (Opcional)", placeholder="Ej: P-1024", key=f"pallet_{v}")
             
             responsable = st.selectbox("Responsable de la custodia", RESPONSABLES, key=f"resp_{v}")
@@ -241,7 +239,6 @@ with tab_registro:
                 if not df_prod.empty:
                     stock_actual = int(df_prod["stock_final"].sum())
             
-            st.info(f"📦 **Stock actual en sistema:** {stock_actual} unidades")
             actualizar_inicial = st.checkbox("🔄 Registrar/Actualizar Stock Inicial (Solo primera vez o correcciones)", key=f"chk_inicial_{v}")
             
             nuevo_stock_base = stock_actual
@@ -396,7 +393,9 @@ with tab_consolidado:
         consolidado = consolidado.sort_values("Producto")
         consolidado["Stock Final Actual"] = consolidado["Total Inicial"] + consolidado["Total Entradas"] - consolidado["Total Salidas"]
         
-        st.dataframe(consolidado, use_container_width=True, hide_index=True)
+        # 🔥 AQUÍ ESTÁ EL CAMBIO DE ALTURA 🔥
+        st.dataframe(consolidado, use_container_width=True, hide_index=True, height=450)
+        
         st.markdown('</div>', unsafe_allow_html=True)
     else:
         st.info("Aún no hay datos para consolidar.")
