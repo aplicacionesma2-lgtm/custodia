@@ -394,7 +394,7 @@ with tab_consolidado:
         consolidado["Stock Final Actual"] = consolidado["Total Inicial"] + consolidado["Total Entradas"] - consolidado["Total Salidas"]
         
         # 🔥 AQUÍ ESTÁ EL CAMBIO DE ALTURA 🔥
-        st.dataframe(consolidado, use_container_width=True, hide_index=True)
+        st.dataframe(consolidado, use_container_width=True, hide_index=True, height=450)
         
         st.markdown('</div>', unsafe_allow_html=True)
     else:
